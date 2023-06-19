@@ -1,5 +1,7 @@
 package types
 
+import "database/sql"
+
 type Country struct {
 	Id          int
 	CountryName string
@@ -71,8 +73,17 @@ type ProductsResponse struct {
 	Products []Product `json:"products"`
 }
 
+type TokensResponse struct {
+	Token        string `json:"token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
 type CategoriesResponse struct {
 	Categories []Category `json:"products"`
+}
+
+type OrdersResponse struct {
+	Orders []Order `json:"order"`
 }
 
 type NewProduct struct {
@@ -94,11 +105,13 @@ type Order struct {
 }
 
 type User struct {
-	Id       int64
-	Name     string `json:"name"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Role     string `json:"role"`
+	Id              int64
+	Username        string         `json:"username"`
+	Password        string         `json:"password"`
+	Email           string         `json:"email"`
+	RefreshToken    sql.NullString `json:"refresh_token"`
+	RefreshTokenEAT sql.NullInt64  `json:"refresh_token_eat"`
+	Role            string         `json:"role"`
 }
 
 type Response struct {

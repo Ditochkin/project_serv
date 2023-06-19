@@ -12,6 +12,10 @@ const (
 
 	SelectAllCategories = `SELECT * FROM Categories;`
 
+	SelectAllOrders = `SELECT Products.Name, Orders.Quantity
+					   FROM Orders
+					   JOIN Products ON Orders.ProductId = Products.Id;`
+
 	GetProductQuantityQuery = `SELECT Quantity FROM Products WHERE Name = (?)`
 
 	GetOrderQuantityQuery = `SELECT Quantity FROM Orders WHERE ProductId IN 
@@ -55,11 +59,17 @@ const (
 	ChangeProductPriceQuery       = `UPDATE Products SET Price = (?) WHERE Name = (?);`
 	ChangeProductQuantityQuery    = `UPDATE Products SET Quantity = (?) WHERE Name = (?);`
 
-	CreateUserQuery = `INSERT INTO users (Name, Username, Password, Role)
+	CreateUserQuery = `INSERT INTO Users (UserName, Password, Email, Role)
 						VALUES ((?),(?),(?), (?))`
 
-	GetUserQuery = `SELECT * FROM users
-						WHERE Username = (?) AND Password = (?)`
+	GetUserQuery = `SELECT * FROM Users WHERE UserName = (?) AND Password = (?);`
+
+	UpdateRefreshQuery = `UPDATE Users
+						  SET RefreshToken = (?), RefreshTokenEAT = (?)
+						  WHERE Id = (?);`
+
+	GetUserByRefreshTokenQuery = `SELECT * FROM Users
+						  WHERE RefreshToken = (?)`
 )
 
 type Store struct {

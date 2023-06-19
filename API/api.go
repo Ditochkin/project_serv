@@ -5,17 +5,21 @@ import (
 	"db_lab7/db"
 	"db_lab7/types"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/rs/cors"
 )
 
 type API struct {
-	config *config.Config
-	router *mux.Router
-	store  *db.Store
+	config     *config.Config
+	router     *mux.Router
+	store      *db.Store
+	corsRouter http.Handler
 }
 
 func InitApi() (*API, error) {
@@ -28,6 +32,28 @@ func InitApi() (*API, error) {
 	}
 
 	res.router = mux.NewRouter()
+
+	// Создаем экземпляр CORS-обработчика с поддержкой куки
+	corsOptions := cors.New(cors.Options{
+		AllowedOrigins:   []string{"http://127.0.0.1:5500"}, // Здесь необходимо указать список разрешенных источников (origins)
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization"},
+		AllowCredentials: true, // Включаем поддержку отправки куки (credentials)
+		Debug:            true, // Включаем отладочные сообщения, чтобы видеть информацию о CORS
+	})
+
+	// Используем CORS-обработчик в качестве обработчика для маршрутизатора
+	res.corsRouter = corsOptions.Handler(res.router)
+
+	// Здесь добавляем обработчик OPTIONS для предварительных запросов
+	res.router.Methods("OPTIONS").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Устанавливаем заголовки ответа для предварительного запроса
+		w.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:5500")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	})
+
 	return res, nil
 }
 
@@ -36,7 +62,7 @@ func (a *API) Start() error {
 	a.configureDB()
 	fmt.Println(a.store.Open())
 
-	return http.ListenAndServe(a.config.Port, a.router)
+	return http.ListenAndServe(a.config.Port, a.corsRouter)
 }
 
 func (a *API) Stop() {
@@ -54,6 +80,7 @@ func (a *API) configureRouter() {
 
 	a.router.HandleFunc("/get_products", a.handleGetAllProducts())
 	a.router.HandleFunc("/get_categories", a.handleGetAllCategories())
+	a.router.HandleFunc("/get_orders", a.handleGetAllOrders())
 
 	a.router.HandleFunc("/add_category", a.handleAddCategory())
 	a.router.HandleFunc("/add_product", a.handleAddProduct())
@@ -76,12 +103,29 @@ func (a *API) configureRouter() {
 
 func (a *API) handleSignOut() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:5500")
+
 		c := &http.Cookie{
 			Name:     "session_token",
 			Value:    "",
 			Path:     "/",
 			MaxAge:   -1,
 			HttpOnly: true,
+			Expires:  time.Now().Add(tokenTTL),
+			SameSite: http.SameSiteNoneMode,
+			Secure:   true,
+		}
+		http.SetCookie(writer, c)
+
+		c = &http.Cookie{
+			Name:     "refresh_token",
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: true,
+			Expires:  time.Now().Add(tokenTTL),
+			SameSite: http.SameSiteNoneMode,
+			Secure:   true,
 		}
 		http.SetCookie(writer, c)
 
@@ -91,12 +135,132 @@ func (a *API) handleSignOut() http.HandlerFunc {
 
 func (a *API) handleSignIn() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromToken(writer, request)
+
+		writer.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:5500")
+		writer.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
 		if err == nil {
 			writer.WriteHeader(http.StatusOK)
 			return
 		}
 
+		fmt.Println("Sign in not error")
+
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			fmt.Println("1")
+			http.Error(writer, "can't read body", http.StatusBadRequest)
+			return
+		}
+		err = request.Body.Close()
+		if err != nil {
+			fmt.Println("2")
+			http.Error(writer, "can't close body", http.StatusInternalServerError)
+			return
+		}
+		var usr types.User
+
+		fmt.Println(body)
+		err = json.Unmarshal(body, &usr)
+		if err != nil {
+			fmt.Println("3")
+			http.Error(writer, "can't close body", http.StatusInternalServerError)
+			return
+		}
+
+		fmt.Println(usr.Username, usr.Password)
+
+		token, refreshToken, err := a.generateTokensByCred(usr.Username, usr.Password)
+		if err != nil {
+			http.Error(writer, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		response := types.TokensResponse{
+			Token:        token,
+			RefreshToken: refreshToken,
+		}
+
+		responseData, err := json.Marshal(response)
+		if err != nil {
+			http.Error(writer, "failed to marshal response", http.StatusInternalServerError)
+			return
+		}
+
+		fmt.Println("Sign in not error token")
+
+		setTokenCookies(writer, token, refreshToken)
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		writer.Write(responseData)
+	}
+}
+
+func (a *API) GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer http.ResponseWriter, request *http.Request) (int64, string, error) {
+	// пытаемся спарсить из кук токен сессии
+	ckc, err := request.Cookie("session_token")
+	fmt.Println("session_token", ckc)
+	if err != nil && !errors.Is(err, http.ErrNoCookie) {
+		return 0, "", err
+	}
+	if err == nil {
+		userID, role, err := a.ParseToken(ckc.Value)
+		if err == nil {
+			return userID, role, nil
+		}
+	}
+
+	// пытаемся спарсить из кук токен рефреша, если с токеном сессии плохо
+	ckc, err = request.Cookie("refresh_token")
+	if err != nil && !errors.Is(err, http.ErrNoCookie) {
+		return 0, "", err
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	usr, err := a.ParseRefreshToken(ckc.Value)
+	if err != nil {
+		return 0, "", err
+	}
+	token, refreshToken, err := a.generateTokens(usr.Id, usr.Role)
+	if err != nil {
+		return 0, "", err
+	}
+	setTokenCookies(writer, token, refreshToken)
+	return usr.Id, usr.Role, nil
+}
+
+func setTokenCookies(writer http.ResponseWriter, token, refreshToken string) {
+	writer.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:5500")
+
+	http.SetCookie(writer, &http.Cookie{
+		Name:     "session_token",
+		Value:    token,
+		Expires:  time.Now().Add(tokenTTL),
+		SameSite: http.SameSiteNoneMode,
+		Secure:   true,
+	})
+	http.SetCookie(writer, &http.Cookie{
+		Name:     "refresh_token",
+		Value:    refreshToken,
+		Expires:  time.Now().Add(refreshTokenTTL),
+		SameSite: http.SameSiteNoneMode,
+		Secure:   true,
+	})
+}
+
+func (a *API) handleCreateUser() http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		_, role, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
+		if role != "admin" {
+			http.Error(writer, "You are not admin and you have no right for this act.", http.StatusBadRequest)
+			return
+		}
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			http.Error(writer, "can't read body", http.StatusBadRequest)
@@ -113,44 +277,7 @@ func (a *API) handleSignIn() http.HandlerFunc {
 			http.Error(writer, "can't close body", http.StatusInternalServerError)
 			return
 		}
-		token, err := a.generateTokensByCred(usr.Username, usr.Password)
-		if err != nil {
-			http.Error(writer, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		setTokenCookies(writer, token)
-		writer.WriteHeader(http.StatusOK)
-	}
-}
-
-func (a *API) handleCreateUser() http.HandlerFunc {
-	return func(writer http.ResponseWriter, request *http.Request) {
-		_, role, err := a.GetIDAndRoleFromToken(writer, request)
-		if err != nil {
-			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-			return
-		}
-		if role != "admin" {
-			http.Error(writer, "You are not admin and you have no right for this act.", http.StatusBadRequest)
-			return
-		}
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			http.Error(writer, "error in reading body", http.StatusBadRequest)
-			return
-		}
-		err = request.Body.Close()
-		if err != nil {
-			http.Error(writer, "can't close body", http.StatusInternalServerError)
-			return
-		}
-		var usr types.User
-		err = json.Unmarshal(body, &usr)
-		if err != nil {
-			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
-			return
-		}
-		_, err = a.store.Exec(db.CreateUserQuery, usr.Name, usr.Username, generatePasswordHash(usr.Password), usr.Role)
+		_, err = a.store.Exec(db.CreateUserQuery, usr.Username, generatePasswordHash(usr.Password), usr.Email, usr.Role)
 		if err != nil {
 			if err.Error() == "UNIQUE constraint failed: users.Username" {
 				http.Error(writer, "Username is already in use. Try to use another one.", http.StatusBadGateway)
@@ -247,6 +374,12 @@ func (a *API) GetAllProducts() ([]types.Product, error) {
 
 func (a *API) handleGetAllProducts() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
+		// _, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		// if err != nil {
+		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+		// 	return
+		// }
+
 		products, err := a.GetAllProducts()
 		if err != nil {
 			http.Error(writer, err.Error(), http.StatusInternalServerError)
@@ -303,6 +436,12 @@ func (a *API) GetAllCategories() ([]types.Category, error) {
 
 func (a *API) handleGetAllCategories() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
+
 		categories, err := a.GetAllCategories()
 		if err != nil {
 			http.Error(writer, err.Error(), http.StatusInternalServerError)
@@ -325,13 +464,73 @@ func (a *API) handleGetAllCategories() http.HandlerFunc {
 	}
 }
 
+func (a *API) GetAllOrders() ([]types.Order, error) {
+	rows, err := a.store.Query(db.SelectAllOrders)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var name string
+	var quantity int
+
+	var orders []types.Order
+
+	for rows.Next() {
+		err := rows.Scan(&name, &quantity)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+
+		order := types.Order{
+			ProductName:     name,
+			ProductQuantity: quantity,
+		}
+
+		orders = append(orders, order)
+
+		fmt.Println(name, quantity)
+	}
+
+	return orders, nil
+}
+
+func (a *API) handleGetAllOrders() http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
+		orders, err := a.GetAllOrders()
+		if err != nil {
+			http.Error(writer, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		response := types.OrdersResponse{
+			Orders: orders,
+		}
+
+		responseData, err := json.Marshal(response)
+		if err != nil {
+			http.Error(writer, "failed to marshal response", http.StatusInternalServerError)
+			return
+		}
+
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		writer.Write(responseData)
+	}
+}
+
 func (a *API) handleAddCategory() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
-		// if err != nil {
-		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-		// 	return
-		// }
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
 
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -386,11 +585,11 @@ func (a *API) handleAddCategory() http.HandlerFunc {
 
 func (a *API) handleAddProduct() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
-		// if err != nil {
-		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-		// 	return
-		// }
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
 
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -443,11 +642,11 @@ func (a *API) handleAddProduct() http.HandlerFunc {
 
 func (a *API) handleAddProductCategory() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
-		// if err != nil {
-		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-		// 	return
-		// }
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
 
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -490,11 +689,11 @@ func (a *API) handleAddProductCategory() http.HandlerFunc {
 
 func (a *API) handleAddOrder() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
-		// if err != nil {
-		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-		// 	return
-		// }
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
 
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -514,6 +713,8 @@ func (a *API) handleAddOrder() http.HandlerFunc {
 			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
 			return
 		}
+
+		fmt.Println(order)
 
 		if order.ProductName == "" {
 			http.Error(writer, "ProductName is empty", http.StatusInternalServerError)
@@ -551,11 +752,11 @@ func (a *API) handleAddOrder() http.HandlerFunc {
 
 func (a *API) handleDeleteCategory() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
-		// if err != nil {
-		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-		// 	return
-		// }
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
 
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -593,11 +794,11 @@ func (a *API) handleDeleteCategory() http.HandlerFunc {
 
 func (a *API) handleDeleteProduct() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
-		// if err != nil {
-		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-		// 	return
-		// }
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
 
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -677,11 +878,11 @@ func (a *API) handleDeleteProductCategory() http.HandlerFunc {
 
 func (a *API) handleDeleteOrder() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
-		// if err != nil {
-		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-		// 	return
-		// }
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
 
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -728,11 +929,11 @@ func (a *API) handleDeleteOrder() http.HandlerFunc {
 
 func (a *API) handleUpdateCategoryName() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
-		// if err != nil {
-		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-		// 	return
-		// }
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
 
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -775,11 +976,11 @@ func (a *API) handleUpdateCategoryName() http.HandlerFunc {
 
 func (a *API) handleUpdateCategoryDescription() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
-		// if err != nil {
-		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-		// 	return
-		// }
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
 
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -822,11 +1023,11 @@ func (a *API) handleUpdateCategoryDescription() http.HandlerFunc {
 
 func (a *API) handleUpdateProductName() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
-		// if err != nil {
-		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-		// 	return
-		// }
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
 
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -869,11 +1070,11 @@ func (a *API) handleUpdateProductName() http.HandlerFunc {
 
 func (a *API) handleUpdateProductPrice() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
-		// if err != nil {
-		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-		// 	return
-		// }
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
 
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -916,11 +1117,11 @@ func (a *API) handleUpdateProductPrice() http.HandlerFunc {
 
 func (a *API) handleUpdateProductQuantity() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
-		// if err != nil {
-		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-		// 	return
-		// }
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
 
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -963,11 +1164,11 @@ func (a *API) handleUpdateProductQuantity() http.HandlerFunc {
 
 func (a *API) handleUpdateProductDescription() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
-		// if err != nil {
-		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-		// 	return
-		// }
+		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
 
 		body, err := io.ReadAll(request.Body)
 		if err != nil {

@@ -2,21 +2,21 @@ package API
 
 import (
 	"crypto/sha1"
-	"errors"
-	"fmt"
-	"net/http"
-	"time"
-
 	"db_lab7/db"
 	"db_lab7/types"
+	"errors"
+	"fmt"
+	"math/rand"
+	"time"
 
 	"github.com/dgrijalva/jwt-go"
 )
 
 const (
-	salt       = "asjhdjahsdjahsdas"
-	signingKey = "%*FG67G%f786^G%&()(&J*H)(_I*K{76534d5D"
-	tokenTTL   = 24 * 3600 * time.Second
+	salt            = "asjhdjahsdjahsdas"
+	signingKey      = "%*FG67G%f786^G%&()(&J*H)(_I*K{76534d5D"
+	tokenTTL        = 5 * time.Second
+	refreshTokenTTL = 5 * 24 * time.Hour
 )
 
 type tokenClaims struct {
@@ -45,7 +45,30 @@ func (a *API) ParseToken(accessToken string) (int64, string, error) {
 	return claims.UserId, claims.Role, nil
 }
 
+func (a *API) ParseRefreshToken(refreshToken string) (*types.User, error) {
+	rows, err := a.store.Query(db.GetUserByRefreshTokenQuery, refreshToken)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var user types.User
+	isThereAnyRow := rows.Next()
+	if !isThereAnyRow {
+		return nil, errors.New("no such refresh token")
+	}
+	err = rows.Scan(&user.Id, &user.Username, &user.Password, &user.Email, &user.RefreshToken, &user.RefreshTokenEAT, &user.Role)
+	if err != nil {
+		return nil, err
+	}
+
+	if time.Now().After(time.Unix(user.RefreshTokenEAT.Int64, 0)) {
+		return nil, errors.New("refresh token expired")
+	}
+	return &user, nil
+}
+
 func (a *API) getUserByUserNameAndPassword(username, password string) (int64, string, error) {
+	fmt.Println(username, generatePasswordHash(password))
 	rows, err := a.store.Query(db.GetUserQuery, username, generatePasswordHash(password))
 	if err != nil {
 		return 0, "", err
@@ -53,23 +76,25 @@ func (a *API) getUserByUserNameAndPassword(username, password string) (int64, st
 	defer rows.Close()
 	var user types.User
 	isThereAnyRow := rows.Next()
+
 	if !isThereAnyRow {
 		rows.Close()
 		return 0, "", errors.New("login or password is incorrect")
 	}
-	err = rows.Scan(&user.Id, &user.Name, &user.Username, &user.Password, &user.Role)
+	err = rows.Scan(&user.Id, &user.Username, &user.Password, &user.Email, &user.RefreshToken, &user.RefreshTokenEAT, &user.Role)
+	fmt.Println(user.Id, user.Username, user.Password, user.Email)
 	return user.Id, user.Role, err
 }
 
-func (a *API) generateTokensByCred(username, password string) (string, error) {
+func (a *API) generateTokensByCred(username, password string) (string, string, error) {
 	userID, role, err := a.getUserByUserNameAndPassword(username, password)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	return a.generateTokens(userID, role)
 }
 
-func (a *API) generateTokens(userID int64, role string) (string, error) {
+func (a *API) generateTokens(userID int64, role string) (string, string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, &tokenClaims{
 		jwt.StandardClaims{
 			ExpiresAt: time.Now().Add(tokenTTL).Unix(),
@@ -79,8 +104,16 @@ func (a *API) generateTokens(userID int64, role string) (string, error) {
 		role,
 	})
 
+	refreshToken, err := newRefreshToken()
+	if err != nil {
+		return "", "", err
+	}
+	_, err = a.store.Exec(db.UpdateRefreshQuery, refreshToken, time.Now().Add(refreshTokenTTL).Unix(), userID)
+	if err != nil {
+		return "", "", err
+	}
 	ttk, err := token.SignedString([]byte(signingKey))
-	return ttk, err
+	return ttk, refreshToken, err
 }
 
 func generatePasswordHash(password string) string {
@@ -90,28 +123,15 @@ func generatePasswordHash(password string) string {
 	return fmt.Sprintf("%x", hash.Sum([]byte(salt)))
 }
 
-func setTokenCookies(writer http.ResponseWriter, token string) {
-	http.SetCookie(writer, &http.Cookie{
-		Name:    "session_token",
-		Value:   token,
-		Expires: time.Now().Add(tokenTTL),
-	})
-}
+func newRefreshToken() (string, error) {
+	b := make([]byte, 32)
 
-func (a *API) GetIDAndRoleFromToken(writer http.ResponseWriter, request *http.Request) (int64, string, error) {
-	ckc, err := request.Cookie("session_token")
-	if err != nil && !errors.Is(err, http.ErrNoCookie) {
-		fmt.Println("Im here! 1")
-		return 0, "", err
-	}
-	if err == nil {
-		userID, role, err := a.ParseToken(ckc.Value)
-		if err == nil {
-			fmt.Println(userID, role)
-			return userID, role, nil
-		}
-	}
-	fmt.Println("Im here! 2")
+	s := rand.NewSource(time.Now().Unix())
+	r := rand.New(s)
 
-	return 0, "", errors.New("")
+	if _, err := r.Read(b); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%x", b), nil
 }
