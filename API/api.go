@@ -117,18 +117,6 @@ func (a *API) handleSignOut() http.HandlerFunc {
 		}
 		http.SetCookie(writer, c)
 
-		c = &http.Cookie{
-			Name:     "refresh_token",
-			Value:    "",
-			Path:     "/",
-			MaxAge:   -1,
-			HttpOnly: true,
-			Expires:  time.Now().Add(tokenTTL),
-			SameSite: http.SameSiteNoneMode,
-			Secure:   true,
-		}
-		http.SetCookie(writer, c)
-
 		writer.WriteHeader(http.StatusOK)
 	}
 }
@@ -139,7 +127,7 @@ func (a *API) handleSignIn() http.HandlerFunc {
 		writer.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:5500")
 		writer.Header().Set("Access-Control-Allow-Credentials", "true")
 
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err == nil {
 			writer.WriteHeader(http.StatusOK)
 			return
@@ -171,15 +159,14 @@ func (a *API) handleSignIn() http.HandlerFunc {
 
 		fmt.Println(usr.Username, usr.Password)
 
-		token, refreshToken, err := a.generateTokensByCred(usr.Username, usr.Password)
+		token, err := a.generateTokensByCred(usr.Username, usr.Password)
 		if err != nil {
 			http.Error(writer, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		response := types.TokensResponse{
-			Token:        token,
-			RefreshToken: refreshToken,
+			Token: token,
 		}
 
 		responseData, err := json.Marshal(response)
@@ -190,48 +177,31 @@ func (a *API) handleSignIn() http.HandlerFunc {
 
 		fmt.Println("Sign in not error token")
 
-		setTokenCookies(writer, token, refreshToken)
+		setTokenCookies(writer, token)
 		writer.Header().Set("Content-Type", "application/json")
 		writer.WriteHeader(http.StatusOK)
 		writer.Write(responseData)
 	}
 }
 
-func (a *API) GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer http.ResponseWriter, request *http.Request) (int64, string, error) {
-	// пытаемся спарсить из кук токен сессии
+func (a *API) GetIDAndRoleFromToken(writer http.ResponseWriter, request *http.Request) (int64, string, error) {
 	ckc, err := request.Cookie("session_token")
-	fmt.Println("session_token", ckc)
+
 	if err != nil && !errors.Is(err, http.ErrNoCookie) {
 		return 0, "", err
 	}
 	if err == nil {
 		userID, role, err := a.ParseToken(ckc.Value)
 		if err == nil {
+			fmt.Println(userID, role)
 			return userID, role, nil
 		}
 	}
 
-	// пытаемся спарсить из кук токен рефреша, если с токеном сессии плохо
-	ckc, err = request.Cookie("refresh_token")
-	if err != nil && !errors.Is(err, http.ErrNoCookie) {
-		return 0, "", err
-	}
-	if err != nil {
-		return 0, "", err
-	}
-	usr, err := a.ParseRefreshToken(ckc.Value)
-	if err != nil {
-		return 0, "", err
-	}
-	token, refreshToken, err := a.generateTokens(usr.Id, usr.Role)
-	if err != nil {
-		return 0, "", err
-	}
-	setTokenCookies(writer, token, refreshToken)
-	return usr.Id, usr.Role, nil
+	return 0, "", errors.New("")
 }
 
-func setTokenCookies(writer http.ResponseWriter, token, refreshToken string) {
+func setTokenCookies(writer http.ResponseWriter, token string) {
 	writer.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:5500")
 
 	http.SetCookie(writer, &http.Cookie{
@@ -241,18 +211,11 @@ func setTokenCookies(writer http.ResponseWriter, token, refreshToken string) {
 		SameSite: http.SameSiteNoneMode,
 		Secure:   true,
 	})
-	http.SetCookie(writer, &http.Cookie{
-		Name:     "refresh_token",
-		Value:    refreshToken,
-		Expires:  time.Now().Add(refreshTokenTTL),
-		SameSite: http.SameSiteNoneMode,
-		Secure:   true,
-	})
 }
 
 func (a *API) handleCreateUser() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, role, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, role, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -374,7 +337,7 @@ func (a *API) GetAllProducts() ([]types.Product, error) {
 
 func (a *API) handleGetAllProducts() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
 		// if err != nil {
 		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 		// 	return
@@ -436,7 +399,7 @@ func (a *API) GetAllCategories() ([]types.Category, error) {
 
 func (a *API) handleGetAllCategories() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -497,7 +460,7 @@ func (a *API) GetAllOrders() ([]types.Order, error) {
 
 func (a *API) handleGetAllOrders() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -526,7 +489,7 @@ func (a *API) handleGetAllOrders() http.HandlerFunc {
 
 func (a *API) handleAddCategory() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -585,7 +548,7 @@ func (a *API) handleAddCategory() http.HandlerFunc {
 
 func (a *API) handleAddProduct() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -642,7 +605,7 @@ func (a *API) handleAddProduct() http.HandlerFunc {
 
 func (a *API) handleAddProductCategory() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -689,7 +652,7 @@ func (a *API) handleAddProductCategory() http.HandlerFunc {
 
 func (a *API) handleAddOrder() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -752,7 +715,7 @@ func (a *API) handleAddOrder() http.HandlerFunc {
 
 func (a *API) handleDeleteCategory() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -794,7 +757,7 @@ func (a *API) handleDeleteCategory() http.HandlerFunc {
 
 func (a *API) handleDeleteProduct() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -878,7 +841,7 @@ func (a *API) handleDeleteProductCategory() http.HandlerFunc {
 
 func (a *API) handleDeleteOrder() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -929,7 +892,7 @@ func (a *API) handleDeleteOrder() http.HandlerFunc {
 
 func (a *API) handleUpdateCategoryName() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -976,7 +939,7 @@ func (a *API) handleUpdateCategoryName() http.HandlerFunc {
 
 func (a *API) handleUpdateCategoryDescription() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -1023,7 +986,7 @@ func (a *API) handleUpdateCategoryDescription() http.HandlerFunc {
 
 func (a *API) handleUpdateProductName() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -1070,7 +1033,7 @@ func (a *API) handleUpdateProductName() http.HandlerFunc {
 
 func (a *API) handleUpdateProductPrice() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -1117,7 +1080,7 @@ func (a *API) handleUpdateProductPrice() http.HandlerFunc {
 
 func (a *API) handleUpdateProductQuantity() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
@@ -1164,7 +1127,7 @@ func (a *API) handleUpdateProductQuantity() http.HandlerFunc {
 
 func (a *API) handleUpdateProductDescription() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromTokenAndRefreshTokenIfNeeded(writer, request)
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return

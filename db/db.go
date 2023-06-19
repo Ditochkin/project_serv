@@ -60,16 +60,9 @@ const (
 	ChangeProductQuantityQuery    = `UPDATE Products SET Quantity = (?) WHERE Name = (?);`
 
 	CreateUserQuery = `INSERT INTO Users (UserName, Password, Email, Role)
-						VALUES ((?),(?),(?), (?))`
+						VALUES ((?),(?),(?),(?))`
 
 	GetUserQuery = `SELECT * FROM Users WHERE UserName = (?) AND Password = (?);`
-
-	UpdateRefreshQuery = `UPDATE Users
-						  SET RefreshToken = (?), RefreshTokenEAT = (?)
-						  WHERE Id = (?);`
-
-	GetUserByRefreshTokenQuery = `SELECT * FROM Users
-						  WHERE RefreshToken = (?)`
 )
 
 type Store struct {
