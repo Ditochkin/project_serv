@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Poduct list</title>
+  <style>
+    .product {
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 10px;
+      margin-bottom: 10px;
+      font-size: 18px;
+      background-color: #f9f9f9;
+    }
+
+    .product h3 {
+      margin-top: 0;
+      color: #333;
+    }
+
+    .product-description {
+      margin-bottom: 5px;
+    }
+
+    .product-price {
+      font-weight: bold;
+      color: #555;
+    }
+
+    .product-quantity {
+      display: flex;
+      align-items: center;
+      margin-top: 10px;
+    }
+
+    .quantity-label {
+      margin-right: 5px;
+    }
+
+    .quantity-input {
+      width: 40px;
+      text-align: center;
+    }
+
+    .buy-button {
+      padding: 5px 10px;
+      background-color: #4CAF50;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-left: 10px;
+    }
+
+    .buy-button:hover {
+      background-color: #45a049;
+    }
+
+    #cart-icon {
+    position: fixed;
+    top: 20px;
+    right: 130px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    }
+
+    #cart-icon i {
+     margin-right: 5px;
+    }
+
+    #cart-count {
+    background-color: #ff0000;
+    color: #fff;
+    font-size: 12px;
+    padding: 3px 6px;
+    border-radius: 50%;
+    }
+
+    .logout-button {
+      background-color: #ff0000;
+      color: #ffffff;
+      padding: 10px 20px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
+    #logoutBtn {
+      position: absolute;
+      top: 10px;
+      right: 20px;
+    }
+
+    .logout-button:hover {
+      background-color: #ff3333;
+    }
+
+    .popup {
+    position: fixed;
+    top: 10%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    padding: 10px;
+    background-color: #f1f1f1;
+    color: #333;
+    font-size: 20px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  }
+
+  </style>
+</head>
+<body>
+
+    <div id="cart-icon">
+        <i class="fas fa-shopping-cart"></i>
+    </div>
+    <button id="logoutBtn" class="logout-button">Sign out</button>
+
+      
+  <h1>Product list</h1>
+  <div id="products"></div>
+
+  <script src="http://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/js/all.min.js" crossorigin="anonymous"></script>
+
+  <script src="../cookie.js"></script>
+  <script src="../script.js"></script>
+  <script src="scripts.js"></script>
+</body>
+</html>

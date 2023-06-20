@@ -14,7 +14,8 @@ const (
 
 	SelectAllOrders = `SELECT Products.Name, Orders.Quantity
 					   FROM Orders
-					   JOIN Products ON Orders.ProductId = Products.Id;`
+					   JOIN Products ON Orders.ProductId = Products.Id
+					   WHERE Orders.UserId = (?);`
 
 	GetProductQuantityQuery = `SELECT Quantity FROM Products WHERE Name = (?)`
 
@@ -32,7 +33,7 @@ const (
 								  	   (SELECT id FROM Categories WHERE Name = (?)));`
 
 	AddOrderQuery = `INSERT INTO Orders (UserId, ProductId, Quantity) 
-					 VALUES ((1), 
+					 VALUES ((?), 
 					 (SELECT id FROM Products WHERE Name = (?)), 
 					 ((?)));`
 

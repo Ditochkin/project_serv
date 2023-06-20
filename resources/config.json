@@ -1,4 +1,0 @@
-{
-  "port":"localhost:8080",
-  "dsn": "file:resources\\games.db"
-}

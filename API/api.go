@@ -186,6 +186,7 @@ func (a *API) handleSignIn() http.HandlerFunc {
 
 func (a *API) GetIDAndRoleFromToken(writer http.ResponseWriter, request *http.Request) (int64, string, error) {
 	ckc, err := request.Cookie("session_token")
+	fmt.Println("cookit:  ", ckc)
 
 	if err != nil && !errors.Is(err, http.ErrNoCookie) {
 		return 0, "", err
@@ -215,15 +216,18 @@ func setTokenCookies(writer http.ResponseWriter, token string) {
 
 func (a *API) handleCreateUser() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, role, err := a.GetIDAndRoleFromToken(writer, request)
-		if err != nil {
-			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-			return
-		}
-		if role != "admin" {
-			http.Error(writer, "You are not admin and you have no right for this act.", http.StatusBadRequest)
-			return
-		}
+		writer.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:5500")
+		writer.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		// _, role, err := a.GetIDAndRoleFromToken(writer, request)
+		// if err != nil {
+		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+		// 	return
+		// }
+		// if role != "admin" {
+		// 	http.Error(writer, "You are not admin and you have no right for this act.", http.StatusBadRequest)
+		// 	return
+		// }
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			http.Error(writer, "can't read body", http.StatusBadRequest)
@@ -337,11 +341,11 @@ func (a *API) GetAllProducts() ([]types.Product, error) {
 
 func (a *API) handleGetAllProducts() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		// _, _, err := a.GetIDAndRoleFromToken(writer, request)
-		// if err != nil {
-		// 	http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-		// 	return
-		// }
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
 
 		products, err := a.GetAllProducts()
 		if err != nil {
@@ -427,8 +431,8 @@ func (a *API) handleGetAllCategories() http.HandlerFunc {
 	}
 }
 
-func (a *API) GetAllOrders() ([]types.Order, error) {
-	rows, err := a.store.Query(db.SelectAllOrders)
+func (a *API) GetAllOrders(id int64) ([]types.Order, error) {
+	rows, err := a.store.Query(db.SelectAllOrders, id)
 	if err != nil {
 		return nil, err
 	}
@@ -460,12 +464,14 @@ func (a *API) GetAllOrders() ([]types.Order, error) {
 
 func (a *API) handleGetAllOrders() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromToken(writer, request)
+
+		id, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
 		}
-		orders, err := a.GetAllOrders()
+		fmt.Println("User id = ", id)
+		orders, err := a.GetAllOrders(id)
 		if err != nil {
 			http.Error(writer, err.Error(), http.StatusInternalServerError)
 			return
@@ -652,11 +658,16 @@ func (a *API) handleAddProductCategory() http.HandlerFunc {
 
 func (a *API) handleAddOrder() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromToken(writer, request)
+		writer.Header().Set("Access-Control-Allow-Origin", "http://127.0.0.1:5500")
+		writer.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		id, _, err := a.GetIDAndRoleFromToken(writer, request)
 		if err != nil {
 			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
 			return
 		}
+
+		fmt.Println("User id:  ", id)
 
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -703,7 +714,7 @@ func (a *API) handleAddOrder() http.HandlerFunc {
 			return
 		}
 
-		_, err = a.store.Exec(db.AddOrderQuery, order.ProductName, order.ProductQuantity)
+		_, err = a.store.Exec(db.AddOrderQuery, id, order.ProductName, order.ProductQuantity)
 		if err != nil {
 			http.Error(writer, err.Error(), http.StatusInternalServerError)
 			return
